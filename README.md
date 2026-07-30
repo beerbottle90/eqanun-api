@@ -301,6 +301,9 @@ PASS/FAIL.
 
 ## License
 
-[MIT](LICENSE) for the software in this repository. The legal acts it retrieves
-are published by the Ministry of Justice of the Republic of Azerbaijan and are
-subject to that publisher's own terms.
+[MIT](LICENSE) — this covers the software in this repository only.
+
+The legal acts it retrieves are published by the Ministry of Justice of the
+Republic of Azerbaijan on e-qanun.az. They are subject to that publisher's own
+terms; this project neither owns nor relicenses them, and redistributing the
+corpus is out of scope (see the governance note above).
