@@ -26,6 +26,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .client import EqanunClient, EqanunError, __version__
+from .retrieval import embeddings_status, semantic_rerank
 
 SERVER_NAME = "eqanun-api"
 SERVER_VERSION = __version__
@@ -47,16 +48,56 @@ _client = EqanunClient()
 # Tool definitions: JSON Schema + handler. One source of truth for both        #
 # transports.                                                                   #
 # --------------------------------------------------------------------------- #
+# How many upstream rows to pull before reranking. e-qanun returns matches in
+# its own order, so the wanted act is often outside the first page: searching
+# for the Civil Code ("Mulki Mecelle") yields 623 rows whose first six are all
+# amendment decrees. Reranking a page of 20 cannot fix that -- the Code is not
+# in the page. Fetching a wider pool and reordering it can.
+_POOL_MULTIPLIER = 5
+_POOL_MAX = 200
+
+
 def _t_search_acts(args: Dict[str, Any]) -> Any:
-    return _client.search(
+    length = int(args.get("length", 20))
+    start = int(args.get("start", 0))
+    rank = bool(args.get("rerank", True))
+
+    pool = min(max(length * _POOL_MULTIPLIER, length), _POOL_MAX) if rank else length
+    raw = _client.search(
         args["query"],
         scope=args.get("scope", "title"),
         status=args.get("status", "in_force"),
         exact=bool(args.get("exact", False)),
         types=args.get("types") or None,
-        start=int(args.get("start", 0)),
-        length=int(args.get("length", 20)),
+        start=start,
+        length=pool,
     )
+    if not rank:
+        raw["ranking"] = "Upstream order, unranked (rerank=false)."
+        return raw
+
+    ranked = semantic_rerank(
+        args["query"],
+        raw.get("results") or [],
+        fields=("title", "typeName"),
+        limit=length,
+    )
+    raw["results"] = ranked["results"]
+    raw["length"] = len(ranked["results"])
+    ranking = {
+        "method": ranked["method"],
+        "candidates_considered": pool,
+        "note": ranked.get("note") or ranked.get("warning"),
+    }
+    if "model" in ranked:
+        ranking["model"] = ranked["model"]
+    raw["ranking"] = ranking
+    raw["ranking_warning"] = (
+        "e-qanun returns matches in its own order, not by relevance. These "
+        "results were reordered locally; `total` is still the upstream count. "
+        "Pass rerank=false to see the raw upstream order."
+    )
+    return raw
 
 
 def _t_count_acts(args: Dict[str, Any]) -> Any:
@@ -137,7 +178,8 @@ TOOLS: List[Dict[str, Any]] = [
             "list_types — e.g. types=[73] returns only Constitutional Court "
             "decisions, [87] Supreme Court Plenum decisions. Returns total count "
             "and results (id, title, citation, typeName, statusName, "
-            "acceptDate). Use id with get_act. NOTE: status defaults to in_force, "
+            "acceptDate). Results are RERANKED locally by relevance because "
+            "e-qanun returns matches unordered. Use id with get_act. NOTE: status defaults to in_force, "
             "which EXCLUDES repealed acts — pass status='all' for historical "
             "research. statusName and dates are the publisher's own labels; no "
             "point-in-time (as-of-date) retrieval is available."
@@ -152,10 +194,37 @@ TOOLS: List[Dict[str, Any]] = [
                 "types": {
                     "type": "array",
                     "items": {"type": "integer"},
-                    "description": "Act-type ids from list_types. Omit for no type filter.",
+                    "description": (
+                        "Act-type ids from list_types. Omit for no type filter. "
+                        "TYPE FILTERING IS THE STRONGEST TOOL HERE: e-qanun mixes "
+                        "codes, laws, decrees and cabinet resolutions in one result "
+                        "set and does not rank, so an unfiltered search drowns in "
+                        "amendment instruments. Ids that matter: 107 = Mecelleler "
+                        "(CODES, 27 entries) - use this to find a code itself; "
+                        "searching the Civil Code unfiltered returns 623 rows whose "
+                        "top hits are all amendment decrees, while types=[107] "
+                        "returns 2 with the Civil Code first. 30 = Qanunlar (laws), "
+                        "29 = all laws incl. constitutional, 73 = Constitutional "
+                        "Court, 87 = Supreme Court Plenum. 31 (presidential decrees) "
+                        "and 32 (cabinet resolutions) are the usual amendment noise."
+                    ),
                 },
                 "start": {"type": "integer", "default": 0},
                 "length": {"type": "integer", "default": 20},
+                "rerank": {
+                    "type": "boolean",
+                    "default": True,
+                    "description": (
+                        "Reorder results by relevance before returning them. "
+                        "e-qanun does NOT rank: a title search for the Civil "
+                        "Code returns 623 rows whose first six are amendment "
+                        "decrees. With rerank on, a wider candidate pool is "
+                        "fetched and reordered -- semantically when an "
+                        "embeddings backend is configured, by BM25 otherwise. "
+                        "The response's `ranking.method` says which ran. Set "
+                        "false only to inspect the raw upstream order."
+                    ),
+                },
             },
             "required": ["query"],
         },
