@@ -168,6 +168,22 @@ _STR = {"type": "string"}
 _SCOPE = {"type": "string", "enum": ["title", "text"], "default": "title"}
 _STATUS = {"type": "string", "enum": ["in_force", "cancelled", "all"], "default": "in_force"}
 
+
+def _t_server_status(args: Dict[str, Any]) -> Any:
+    """What this server is, and whether semantic ranking is actually live."""
+    return {
+        "server": "eqanun-api",
+        "source": "e-qanun.az (Azerbaijan Ministry of Justice) - public, no auth",
+        "mode": "passthrough + local reranking (no local corpus)",
+        "known_upstream_quirks": [
+            'e-qanun does not rank: a title search for the Civil Code returns 623 rows whose first six are amendment decrees. Results are reranked locally; see `ranking.method` on every search.',
+            'Type filtering is the strongest lever: types=[107] (Mecelleler) narrows those 623 rows to 2, the Civil Code first. Types 31 and 32 are the presidential/cabinet decrees that make up most of the noise.',
+            'status defaults to in_force, which EXCLUDES repealed acts.',
+        ],
+        **embeddings_status(),
+    }
+
+
 TOOLS: List[Dict[str, Any]] = [
     {
         "name": "search_acts",
@@ -297,6 +313,17 @@ TOOLS: List[Dict[str, Any]] = [
         "description": "Return the four top-level act sections.",
         "inputSchema": {"type": "object", "properties": {}},
         "handler": _t_list_sections,
+    },
+    {
+        "name": "server_status",
+        "description": (
+            "What this server talks to, whether semantic ranking is "
+            "currently live, and the upstream quirks worth defending "
+            "against. Call it when results look wrong, to tell a degraded "
+            "ranking channel apart from a genuinely empty result set."
+        ),
+        "inputSchema": {"type": "object", "properties": {}},
+        "handler": _t_server_status,
     },
 ]
 
